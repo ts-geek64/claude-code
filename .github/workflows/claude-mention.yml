@@ -1,0 +1,187 @@
+name: Claude Mention Action
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened]
+  pull_request:
+    types: [opened]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  claude:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'issues' && contains(github.event.issue.body, '@claude')) ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude
+        uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          allowed_tools: "Bash(pip:*),Bash(find:*),Bash(cat:*),Bash(ls:*),Bash(mkdir:*),Bash(cp:*),Bash(mv:*),Bash(grep:*),Bash(sed:*),Bash(echo:*),Bash(git:*)"
+          custom_instructions: |
+            You are working inside the `nuorion-crm-internals` monorepo — a multi-tenant CRM automation platform deployed as Google Cloud Functions on GCP.
+
+            ## Your Primary Task: Convert Scripts to Production-Ready Cron Jobs
+
+            When a user asks you to convert a script (Python file, zip, Colab notebook, or folder) into a cron job, you MUST follow the exact architecture and patterns of this repository. Do not invent your own structure.
+
+            ---
+
+            ## Mandatory Project Structure
+
+            Every new cron job MUST be created as a top-level folder with this exact layout:
+
+            ```
+            [CORE_NAME]/
+            ├── main.py                        # @functions_framework.http entry point
+            ├── requirements.txt               # functions-framework, psycopg2-binary, python-dotenv, etc.
+            ├── .env.example                   # All required env vars with placeholder values
+            ├── src/
+            │   ├── __init__.py
+            │   ├── http.py                    # Parses request, calls service, handles errors
+            │   ├── config/
+            │   │   ├── __init__.py
+            │   │   └── settings.py            # Settings class with validate()
+            │   ├── database/
+            │   │   ├── __init__.py
+            │   │   ├── database_context.py    # Context manager for psycopg2 connection pool
+            │   │   └── repositories/
+            │   │       ├── __init__.py
+            │   │       └── [entity]_repository.py
+            │   ├── services/
+            │   │   ├── __init__.py
+            │   │   └── [name]_service.py      # Orchestrator — accepts conn, calls repo + processor
+            │   ├── data_processor/
+            │   │   ├── __init__.py
+            │   │   └── [name]_processor.py    # Pure transformation/computation logic
+            │   └── utils/
+            │       ├── __init__.py
+            │       ├── tenant_context.py      # ContextVar-based TenantContext (copy from census)
+            │       ├── logger.py
+            │       └── retry.py               # (if external API calls are needed)
+            └── scripts/
+                └── deploy.sh                  # gcloud functions deploy script
+            ```
+
+            ---
+
+            ## Mandatory Code Patterns
+
+            ### 1. main.py — Entry Point
+            ```python
+            import functions_framework
+            from flask import Request, Response
+            from src.http import [name]_pipeline
+
+            @functions_framework.http
+            def [function_name](request: Request) -> Response:
+                try:
+                    request_json = request.get_json(silent=True) or {}
+                    response_body, status_code = [name]_pipeline(request_json)
+                    return Response(response=str(response_body), status=status_code, mimetype="application/json")
+                except Exception as e:
+                    logger.error(f"HTTP trigger failed: {str(e)}")
+                    return Response(response='{"status": "error", "message": "Internal server error"}', status=500, mimetype="application/json")
+            ```
+
+            ### 2. src/http.py — Request Handler
+            - Extract `tenant_id` from request body; return 400 if missing
+            - Call `tenant_context.set_tenant(tenant_id)` BEFORE any DB work
+            - Call `settings.validate()` at startup
+            - Use `with DatabaseContext() as conn:` to manage the connection
+            - Call `tenant_context.clear_tenant()` in the `finally` block — NEVER skip this
+
+            ### 3. src/config/settings.py — Settings
+            - Parse all env vars using `os.getenv()`
+            - Handle Cloud SQL socket path: if `DB_HOST` contains `:` and no leading `/`, prefix with `/cloudsql/`
+            - Include a `validate()` method that raises `ValueError` for any missing required field
+            - Expose a module-level `settings = Settings()` singleton
+
+            ### 4. src/utils/tenant_context.py — Multi-Tenancy
+            - Use `ContextVar` (NOT threading.local)
+            - `VALID_TENANTS = ["au_vodka", "milam_and_greene", "omnigrowthos"]`
+            - `set_tenant(tenant_id)` maps full ID to prefix: `au_vodka` → `au`, `milam_and_greene` → `milam`, `omnigrowthos` → `omnigrowthos`
+            - `get_table_name(base_table)` returns `{prefix}_{base_table}`
+            - `clear_tenant()` resets the ContextVar to None
+
+            ### 5. src/services/[name]_service.py — Orchestrator
+            - Accept `conn` (psycopg2 connection) in `__init__`
+            - Instantiate repositories and processors internally
+            - Call `self.conn.commit()` after each logical phase
+            - Return a `stats: Dict` summary
+
+            ### 6. Batch Writes
+            - NEVER write row-by-row. Always batch in groups of 100–250 records using `executemany` or `execute_values`.
+
+            ### 7. Logging
+            - Use Python's `logging` module with structlog-style messages
+            - Format: `"%(levelname)s | %(name)s | %(message)s"`
+            - NEVER log raw tokens, passwords, or PII (emails, phone numbers)
+
+            ### 8. Encryption
+            - If the script handles Shopify/Meta/Klaviyo tokens, store them encrypted using Fernet (`FERNET_KEY` / `ENCRYPTION_KEY`)
+            - Never store raw tokens in the database
+
+            ### 9. Email Hashing
+            - If the script processes emails, always hash them: `email_hash = hashlib.sha256(email.strip().lower().encode()).hexdigest()`
+            - Never send raw emails to BigQuery, Klaviyo, or external APIs
+
+            ### 10. deploy.sh
+            ```bash
+            #!/bin/bash
+            set -euo pipefail
+            source .env
+            gcloud functions deploy [function_name] \
+              --gen2 \
+              --runtime=python312 \
+              --region=us-central1 \
+              --source=. \
+              --entry-point=[function_name] \
+              --trigger-http \
+              --allow-unauthenticated \
+              --memory=512MB \
+              --timeout=540s \
+              --set-env-vars="$(grep -v '^#' .env | xargs | tr ' ' ',')"
+            ```
+
+            ---
+
+            ## What to Do When Asked to Convert a Script
+
+            1. Read the provided script carefully to understand what it does
+            2. Identify: external APIs called, DB tables read/written, env vars needed, data transformations
+            3. Map the logic to the structure above:
+               - Data fetching → repository methods
+               - Transformation/computation → data_processor
+               - Orchestration → service
+               - HTTP wiring → http.py + main.py
+            4. Create ALL files — do not leave stubs or TODOs for core logic
+            5. Infer all required env vars and add them to `.env.example`
+            6. Name the Cloud Function target after the core operation (e.g., `sync_inventory`, `process_returns`)
+            7. Post a summary comment listing: folder name, function target name, env vars added, and a brief description of each layer
+
+            ---
+
+            ## Repository Context
+
+            - Multi-tenant: PostgreSQL uses `{tenant}_` table prefixes. Always use `TenantContext.get_table_name()`.
+            - Databases: PostgreSQL (primary), Neo4j (graph), BigQuery (read-only behavioral events)
+            - Tenants: `au_vodka`, `milam_and_greene`, `omnigrowthos`
+            - Existing modules to reference: `census/`, `geocode/`, `agents/1-signal-agent/`
+            - Tables are NEVER dropped or recreated — only upserted/updated
+            - All modules are deployed as GCP Cloud Functions (2nd gen), Python 3.12

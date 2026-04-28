@@ -1,0 +1,13 @@
+.gcloudignore
+.git
+.gitignore
+__pycache__/
+tests/
+venv/
+.pytest_cache/
+.env
+deploy.sh
+deploy-staging.sh
+scripts/
+*.log
+logs/

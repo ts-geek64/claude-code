@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Local environment
+.env
+.env.local
+
+# Cloud function
+.coverage
+htmlcov/
+node_modules/ 
+
+# GQL
+gql/
+
+*.csv
+.kiro/
+
+# Cursor
+.cursor/
+
+CLAUDE.md
+.agents
+*prompt.md
+skills-lock.json
