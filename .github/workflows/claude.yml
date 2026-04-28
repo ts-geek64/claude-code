@@ -32,6 +32,7 @@ jobs:
         uses: anthropics/claude-code-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           allowed_tools: "Bash(pip:*),Bash(find:*),Bash(cat:*),Bash(ls:*),Bash(mkdir:*),Bash(cp:*),Bash(mv:*),Bash(grep:*),Bash(sed:*),Bash(echo:*),Bash(git:*)"
           custom_instructions: |
             You are working inside the `nuorion-crm-internals` monorepo — a multi-tenant CRM automation platform deployed as Google Cloud Functions on GCP.
