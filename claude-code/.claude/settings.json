@@ -1,0 +1,62 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(jq -r '.tool_input.file_path // .tool_input.path // empty' 2>/dev/null); if [ -n \"$FILE\" ] && echo \"$FILE\" | grep -qE '\\.(ts|tsx)$'; then npx eslint --fix \"$FILE\" 2>/dev/null; fi",
+            "_comment": "CUSTOMIZE: Change the file extension pattern and lint command for your stack. Examples: '.py$' with 'flake8', '.go$' with 'golangci-lint', '.rb$' with 'rubocop'"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(jq -r '.tool_input.file_path // .tool_input.path // empty' 2>/dev/null); if echo \"$FILE\" | grep -qE 'src/generated/|dist/|build/|__pycache__/'; then echo 'BLOCKED: Do not edit generated or build output files directly.' >&2; exit 2; fi",
+            "_comment": "CUSTOMIZE: Add any folders that should never be manually edited (generated code, build output, etc.)"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(jq -r '.tool_input.file_path // .tool_input.path // empty' 2>/dev/null); if echo \"$FILE\" | grep -qE '\\.env$|\\.env\\.production$'; then echo 'BLOCKED: Do not edit .env files directly. Check .env.example for reference.' >&2; exit 2; fi",
+            "_comment": "CUSTOMIZE: Add any sensitive files that should never be edited by Claude"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Context restored. Key reminders: (1) [PACKAGE_MANAGER] is the package manager for this project. (2) [KEY_CONVENTION_1]. (3) [KEY_CONVENTION_2]. (4) Never edit generated files — run the codegen command instead.'",
+            "_comment": "CUSTOMIZE: Replace placeholders with your project's key reminders. These show up when Claude's context is compacted during long sessions."
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -Command \"[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); [System.Windows.Forms.MessageBox]::Show('Claude Code needs your attention', 'Claude Code')\"",
+            "_comment": "Windows desktop notification. On Mac/Linux replace with: osascript -e 'display notification \"Claude Code needs your attention\"' or notify-send 'Claude Code needs your attention'"
+          }
+        ]
+      }
+    ]
+  }
+}

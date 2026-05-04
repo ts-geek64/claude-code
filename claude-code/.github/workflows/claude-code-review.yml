@@ -1,0 +1,74 @@
+name: Claude Code Review
+
+# Triggers: automatically reviews every pull request
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+    # OPTIONAL: Only run review when specific files change
+    # paths:
+    #   - "src/**/*.ts"
+    #   - "src/**/*.py"
+
+jobs:
+  claude-review:
+    # OPTIONAL: Only review PRs from specific authors
+    # if: |
+    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR' ||
+    #   github.event.pull_request.user.login == 'external-contributor'
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+          # ---------------------------------------------------------------
+          # CUSTOMIZE: direct_prompt
+          # Tell Claude what to check during code review.
+          # Tailor this to your stack, standards, and what matters most.
+          # ---------------------------------------------------------------
+          direct_prompt: |
+            Please review this pull request and post your findings as a comment.
+
+            Check for:
+
+            **Correctness**
+            - Logic errors or off-by-one mistakes
+            - Unhandled edge cases (null, empty, error states)
+            - Missing await on async calls
+
+            **Code Quality**
+            - Duplicated logic that could be extracted
+            - Functions or files that are too large
+            - Unclear variable or function names
+
+            **Security**
+            - Hardcoded secrets or credentials
+            - Unvalidated user input used in queries or commands
+            - Missing authentication/authorization checks
+
+            **Architecture**
+            - Does the code follow the project's layered structure?
+            - Is business logic in the right layer?
+            - Are new dependencies justified?
+
+            **[ADD YOUR PROJECT-SPECIFIC CHECKS HERE]**
+            - Example: "Are all new API endpoints documented?"
+            - Example: "Do new database queries have indexes?"
+            - Example: "Are new components exported from the module index?"
+
+            Format your review with clear sections. Be specific — include file names and line numbers.
+            Distinguish between blocking issues and suggestions.

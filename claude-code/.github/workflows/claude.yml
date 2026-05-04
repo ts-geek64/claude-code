@@ -1,0 +1,81 @@
+name: Claude Code
+
+# Triggers: @claude mentions in issues, PRs, and comments
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened]
+  pull_request:
+    types: [opened]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  claude:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'issues' && contains(github.event.issue.body, '@claude')) ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude
+        uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          create_pull_request: "true"
+
+          # ---------------------------------------------------------------
+          # CUSTOMIZE: allowed_tools
+          # Add or remove bash commands Claude is allowed to run.
+          # Format: "Bash(command:*)" to allow a command with any arguments.
+          # ---------------------------------------------------------------
+          allowed_tools: "Bash(find:*),Bash(cat:*),Bash(ls:*),Bash(mkdir:*),Bash(cp:*),Bash(mv:*),Bash(grep:*),Bash(echo:*),Bash(git:*),Bash(npm:*),Bash(pip:*)"
+
+          # ---------------------------------------------------------------
+          # CUSTOMIZE: custom_instructions
+          # Describe your project so Claude understands the context.
+          # Include: tech stack, architecture, naming conventions, rules.
+          # The more specific you are, the better Claude will follow them.
+          # ---------------------------------------------------------------
+          custom_instructions: |
+            ## Project Overview
+            [DESCRIBE YOUR PROJECT HERE]
+            Example: "This is a [type] application built with [stack]. It [what it does]."
+
+            ## Tech Stack
+            - Backend: [e.g. Node.js + Express, Python + FastAPI, Ruby on Rails]
+            - Frontend: [e.g. Next.js + React, Vue 3, Angular]
+            - Database: [e.g. PostgreSQL, MySQL, MongoDB]
+            - Package manager: [e.g. npm, pnpm, yarn, pip, poetry]
+
+            ## Architecture
+            [DESCRIBE YOUR ARCHITECTURE]
+            Example: "Follows a layered architecture: routes → controllers → services → repositories → database."
+
+            ## Key Rules
+            - [RULE 1] Example: "Always use [package manager], never npm/yarn"
+            - [RULE 2] Example: "Never edit files in src/generated/ — run codegen instead"
+            - [RULE 3] Example: "All database queries go in repositories, not services"
+            - [RULE 4] Example: "Use the logger module, never console.log"
+
+            ## Naming Conventions
+            - [YOUR NAMING RULES]
+            Example: "Files: kebab-case. Classes: PascalCase. Variables: camelCase."
+
+            ## What to Do When Asked to Build a Feature
+            1. Read the relevant existing code first to understand patterns
+            2. Follow the project structure exactly — don't invent new patterns
+            3. Create all necessary files — no stubs or TODOs for core logic
+            4. Post a summary comment describing what was created
