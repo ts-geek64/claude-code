@@ -1,0 +1,107 @@
+name: Generate Playwright Tests
+
+# Triggered when the label "generate:tests" is added to a PR.
+# Detects which module(s) the PR touches, then asks Claude to write
+# or update exactly one Playwright spec per module.
+
+on:
+  pull_request:
+    types: [labeled]
+
+jobs:
+  generate-tests:
+    if: github.event.label.name == 'generate:tests'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Detect changed modules
+        id: modules
+        run: |
+          # List files changed in this PR vs base branch
+          git fetch origin ${{ github.event.pull_request.base.ref }}
+          CHANGED=$(git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD)
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          # Extract unique module names from client/src/modules/<name>/
+          MODULES=$(echo "$CHANGED" \
+            | grep '^client/src/modules/' \
+            | sed 's|client/src/modules/||' \
+            | cut -d'/' -f1 \
+            | sort -u \
+            | tr '\n' ' ')
+
+          echo "Detected modules: $MODULES"
+          echo "modules=$MODULES" >> $GITHUB_OUTPUT
+
+      - name: Generate Playwright tests with Claude
+        if: steps.modules.outputs.modules != ''
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: "--max-turns 10"
+          prompt: |
+            You are updating Playwright end-to-end tests for a Next.js frontend.
+
+            ## Modules to process
+            ${{ steps.modules.outputs.modules }}
+
+            ## Your task
+            For each module listed above:
+
+            1. Read ALL source files inside `client/src/modules/<module-name>/` to understand what the module does.
+            2. Read the existing test file at `client/src/modules/<module-name>/tests/<module-name>.spec.ts` if it exists.
+            3. Write or fully replace that test file so it covers:
+               - Renders correctly (key elements visible)
+               - Client-side validation errors (empty submit, invalid inputs)
+               - Happy path (mock the API route with `page.route()`, verify redirect or success state)
+               - API error (mock a 4xx/5xx, verify error message shown)
+               - Loading state (delay mock response, verify button is disabled/shows spinner)
+               - Basic accessibility (inputs have labels, form has aria-label, keyboard submit works)
+            4. Save the file to `client/src/modules/<module-name>/tests/<module-name>.spec.ts`.
+            5. Commit the file directly to this PR branch with message: `test(<module-name>): update Playwright spec`.
+
+            ## Rules
+            - Use `@playwright/test` only — no other test libraries.
+            - Selectors: always `page.getByRole()` or `page.getByLabel()`. Never CSS selectors or `page.locator('.class')`.
+            - Mock all API calls with `page.route('/api/...')` — no real network calls.
+            - One `test.describe` block per page/feature within the module.
+            - No comments explaining what Playwright does — only comments explaining WHY a specific test exists if it is non-obvious.
+            - Keep tests concise. No duplicate assertions. No test that only checks something already covered by another test.
+            - Read `CLAUDE.md` at the repo root for project conventions before writing any code.
+
+      - name: Post summary comment
+        if: steps.modules.outputs.modules != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const modules = '${{ steps.modules.outputs.modules }}'.trim().split(' ').filter(Boolean);
+            const list = modules.map(m => `- \`client/src/modules/${m}/tests/${m}.spec.ts\``).join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `### ✅ Playwright tests generated\n\nUpdated test files:\n${list}\n\nReview the changes on this branch before merging.`
+            });
+
+      - name: Warn if no modules detected
+        if: steps.modules.outputs.modules == ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `### ⚠️ No frontend modules detected\n\nThe \`generate:tests\` label was applied but no changes were found under \`client/src/modules/\`.\n\nMake sure this PR modifies files inside a module folder.`
+            });

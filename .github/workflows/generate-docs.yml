@@ -1,0 +1,162 @@
+name: Generate Module Documentation
+
+# Triggered when the label "generate:docs" is added to a PR.
+# Detects which module(s) the PR touches, then asks Claude to write
+# or update exactly one README.md per module.
+
+on:
+  pull_request:
+    types: [labeled]
+
+jobs:
+  generate-docs:
+    if: github.event.label.name == 'generate:docs'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Detect changed modules
+        id: modules
+        run: |
+          git fetch origin ${{ github.event.pull_request.base.ref }}
+          CHANGED=$(git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD)
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          MODULES=$(echo "$CHANGED" \
+            | grep '^client/src/modules/' \
+            | sed 's|client/src/modules/||' \
+            | cut -d'/' -f1 \
+            | sort -u \
+            | tr '\n' ' ')
+
+          echo "Detected modules: $MODULES"
+          echo "modules=$MODULES" >> $GITHUB_OUTPUT
+
+      - name: Generate documentation with Claude
+        if: steps.modules.outputs.modules != ''
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: "--max-turns 10"
+          prompt: |
+            You are writing module documentation for a Next.js frontend codebase.
+
+            ## Modules to document
+            ${{ steps.modules.outputs.modules }}
+
+            ## Your task
+            For each module listed above:
+
+            1. Read ALL source files inside `client/src/modules/<module-name>/` including components, hooks, and types.
+            2. Read any related API routes in `client/src/app/api/` that this module calls.
+            3. Read any pages in `client/src/app/` that use this module.
+            4. Write or fully replace `client/src/modules/<module-name>/README.md` using the exact structure below.
+            5. Commit the file to this PR branch with message: `docs(<module-name>): update module README`.
+
+            ## README structure (follow exactly)
+
+            ```markdown
+            # <Module Name> Module
+
+            One sentence: what this module does and why it exists.
+
+            ## Files
+
+            | File | Purpose |
+            |------|---------|
+            | `components/foo.tsx` | What it renders |
+            | `hooks/use-foo.ts` | What it manages |
+            | `types/index.ts` | Types it exports |
+
+            ## API Routes
+
+            | Method | Path | Body | Response |
+            |--------|------|------|----------|
+            | POST | `/api/...` | `{ field: type }` | `{ field: type }` |
+
+            (Omit this section if the module has no API routes.)
+
+            ## Components
+
+            ### `ComponentName`
+            What it renders. Props (if any). One usage example.
+
+            ```tsx
+            <ComponentName prop="value" />
+            ```
+
+            ## Hooks
+
+            ### `useHookName(params?)`
+            What it does. Return shape. One usage example.
+
+            ```ts
+            const { data, isLoading, error } = useHookName();
+            ```
+
+            ## Types
+
+            ```ts
+            // Only list types that consumers of this module need to know about
+            interface FooType { ... }
+            ```
+
+            ## Usage
+
+            Minimal complete example showing how to use this module in a page.
+
+            ```tsx
+            import { ComponentName } from "@/modules/<name>";
+            ```
+
+            ## Notes
+
+            Bullet points only. Only include if there is something genuinely non-obvious
+            (e.g. a known limitation, a security consideration, a gotcha).
+            Omit this section if there is nothing worth noting.
+            ```
+
+            ## Writing rules — follow strictly
+            - **No jargon.** Write as if explaining to a developer who has never seen this codebase.
+            - **No duplication.** If something is shown in a code example, do not repeat it in prose.
+            - **No filler.** Every sentence must add information. Cut phrases like "This component is responsible for..." — just say what it does.
+            - **Concise types.** Only document types that a consumer of the module needs. Skip internal-only types.
+            - **Accurate.** Read the actual source code. Do not invent props, return values, or behaviour.
+            - **LLM-friendly.** A developer or AI reading only this file should understand the entire module without opening any source file.
+            - Read `CLAUDE.md` at the repo root for project conventions before writing.
+
+      - name: Post summary comment
+        if: steps.modules.outputs.modules != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const modules = '${{ steps.modules.outputs.modules }}'.trim().split(' ').filter(Boolean);
+            const list = modules.map(m => `- \`client/src/modules/${m}/README.md\``).join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `### ✅ Documentation generated\n\nUpdated docs:\n${list}\n\nReview the changes on this branch before merging.`
+            });
+
+      - name: Warn if no modules detected
+        if: steps.modules.outputs.modules == ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `### ⚠️ No frontend modules detected\n\nThe \`generate:docs\` label was applied but no changes were found under \`client/src/modules/\`.\n\nMake sure this PR modifies files inside a module folder.`
+            });

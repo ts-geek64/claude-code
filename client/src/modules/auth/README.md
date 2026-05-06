@@ -1,65 +1,51 @@
 # Auth Module
 
-## Overview
+Handles user authentication: login, signup, session storage, and logout.
 
-Handles user authentication — login form, credential submission, and token storage.
-Uses a Next.js API route as the backend endpoint.
+## Files
 
-## File Structure
-
-```
-src/modules/auth/
-  components/
-    LoginForm.tsx       # Login form with email/password fields and validation
-  hooks/
-    useLogin.ts         # Submits credentials, stores token, redirects on success
-  types/
-    index.ts            # LoginCredentials, LoginResponse, AuthUser interfaces
-  index.ts              # Barrel export
-  README.md             # This file
-  tests/
-    login.spec.ts       # Playwright end-to-end tests
-
-src/app/
-  (public)/login/
-    page.tsx            # /login route — renders LoginForm
-  api/auth/login/
-    route.ts            # POST /api/auth/login — validates credentials, returns token
-```
+| File                         | Purpose                                                     |
+| ---------------------------- | ----------------------------------------------------------- |
+| `components/login-form.tsx`  | Email + password form, submits to `/api/auth/login`         |
+| `components/signup-form.tsx` | Name + email + password form, submits to `/api/auth/signup` |
+| `hooks/use-login.ts`         | Calls login API, stores token, redirects to `/dashboard`    |
+| `hooks/use-signup.ts`        | Calls signup API, stores token, redirects to `/dashboard`   |
+| `hooks/use-auth.ts`          | Reads current user from localStorage, exposes `logout()`    |
+| `types/index.ts`             | All auth-related TypeScript types                           |
 
 ## API Routes
 
-| Method | Path              | Description       | Request Body                          | Response                                       |
-| ------ | ----------------- | ----------------- | ------------------------------------- | ---------------------------------------------- |
-| `POST` | `/api/auth/login` | Authenticate user | `{ email: string, password: string }` | `{ token: string, user: { id, email, name } }` |
+| Method | Path               | Body                                                | Response                            |
+| ------ | ------------------ | --------------------------------------------------- | ----------------------------------- |
+| POST   | `/api/auth/login`  | `{ email: string, password: string }`               | `{ token: string, user: AuthUser }` |
+| POST   | `/api/auth/signup` | `{ name: string, email: string, password: string }` | `{ token: string, user: AuthUser }` |
+| POST   | `/api/auth/logout` | —                                                   | `{ success: true }`                 |
 
-**Error responses:**
-
-| Status | Condition               |
-| ------ | ----------------------- |
-| `400`  | Invalid input format    |
-| `401`  | Wrong email or password |
-| `500`  | Internal server error   |
+Error responses: `400` invalid input, `401` wrong credentials, `409` email already exists, `500` server error.
 
 ## Components
 
 ### `LoginForm`
 
-Renders the login card with email/password fields, inline validation errors, and a submit button.
-
-**Props:** none
-
-**Usage:**
+Login card with email/password fields, inline validation, forgot-password link, and a link to signup.
 
 ```tsx
 import { LoginForm } from "@/modules/auth";
 
 export default function LoginPage() {
-  return (
-    <main className="flex min-h-screen items-center justify-center">
-      <LoginForm />
-    </main>
-  );
+  return <LoginForm />;
+}
+```
+
+### `SignupForm`
+
+Signup card with name, email, password, confirm-password fields, and a link to login.
+
+```tsx
+import { SignupForm } from "@/modules/auth";
+
+export default function SignupPage() {
+  return <SignupForm />;
 }
 ```
 
@@ -67,63 +53,81 @@ export default function LoginPage() {
 
 ### `useLogin()`
 
-Submits login credentials to `/api/auth/login`, stores the returned token in `localStorage`, and redirects to `/dashboard` on success.
-
-**Returns:**
-
-```typescript
-{
-  login: (credentials: LoginCredentials) => Promise<void>;
-  isLoading: boolean; // true while request is in-flight
-  error: string | null; // server-side error message
-}
+```ts
+const { login, isLoading, error } = useLogin();
+await login({ email: "user@example.com", password: "password123" });
+// → stores token in localStorage, redirects to /dashboard
 ```
 
-**Usage:**
+### `useSignup()`
 
-```tsx
-const { login, isLoading, error } = useLogin();
+```ts
+const { signup, isLoading, error } = useSignup();
+await signup({
+  name: "Jane",
+  email: "jane@example.com",
+  password: "password123",
+  confirmPassword: "password123",
+});
+// → stores token in localStorage, redirects to /dashboard
+```
 
-await login({ email: "user@example.com", password: "secret123" });
+### `useAuth()`
+
+```ts
+const { user, isAuthenticated, logout } = useAuth();
+// user: AuthUser | null — decoded from localStorage token
+// logout() → clears token, redirects to /login
 ```
 
 ## Types
 
-```typescript
-interface LoginCredentials {
-  email: string;
-  password: string;
-}
-
-interface LoginResponse {
-  token: string;
-  user: { id: string; email: string; name: string };
-}
-
+```ts
 interface AuthUser {
   id: string;
   email: string;
   name: string;
 }
+
+interface LoginCredentials {
+  email: string;
+  password: string;
+}
+
+interface SignupCredentials {
+  name: string;
+  email: string;
+  password: string;
+  confirmPassword: string; // validated client-side only, not sent to API
+}
+
+interface AuthResponse {
+  token: string;
+  user: AuthUser;
+}
 ```
 
-## Usage Example
+## Usage
 
 ```tsx
-// src/app/(public)/login/page.tsx
-import { LoginForm } from "@/modules/auth";
+// Protected page — read current user
+"use client";
+import { useAuth } from "@/modules/auth";
 
-export default function LoginPage() {
+export default function Dashboard() {
+  const { user, logout } = useAuth();
   return (
-    <main className="flex min-h-screen items-center justify-center bg-zinc-50">
-      <LoginForm />
-    </main>
+    <div>
+      <p>Hello, {user?.name}</p>
+      <button onClick={logout}>Sign out</button>
+    </div>
   );
 }
 ```
 
 ## Notes
 
-- The API route currently uses a stub validator. Replace the `isValidUser` check with real DB + bcrypt logic.
-- The token is stored in `localStorage` for simplicity. For production, use an `httpOnly` cookie via `Set-Cookie` header.
-- To add a logout flow, clear `localStorage` and redirect to `/login`.
+- Token is a base64-encoded JSON object stored in `localStorage` under `auth_token`. Not a real JWT — demo only.
+- User store is in-memory (`client/src/lib/user-store.ts`). Data resets on server restart.
+- Pre-seeded accounts: `admin@test.com`, `user@test.com`, `demo@example.com` — all with password `password123`.
+- The `(private)/layout.tsx` guards all routes under `(private)/` by checking for the token on mount.
