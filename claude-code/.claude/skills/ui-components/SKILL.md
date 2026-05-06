@@ -4,57 +4,88 @@ description: Conventions for building UI components in this project
 allowed-tools: Read, Write, Edit, Glob
 ---
 
-<!--
-  CUSTOMIZE THIS FILE:
-  Replace the content below with your actual UI component conventions.
-  Include your component library, design tokens, and patterns.
--->
+## UI Component Library
 
-## UI Component Conventions
+This project uses **hand-rolled shadcn-style primitives** located in `src/components/ui/`.
+Do NOT install shadcn/ui CLI or any additional component libraries.
 
-### Component Library
+### Available Primitives
 
-This project uses **[YOUR COMPONENT LIBRARY]**.  
-Examples: shadcn/ui, Material UI, Ant Design, Chakra UI, custom design system
+| Component                                                                         | Path                     | Usage                                                                                                               |
+| --------------------------------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `Button`                                                                          | `@/components/ui/button` | All clickable actions. Variants: `default`, `outline`, `ghost`, `destructive`. Sizes: `default`, `sm`, `lg`, `icon` |
+| `Input`                                                                           | `@/components/ui/input`  | All text inputs                                                                                                     |
+| `Label`                                                                           | `@/components/ui/label`  | Form field labels — always pair with an `Input` via `htmlFor`                                                       |
+| `Card`, `CardHeader`, `CardTitle`, `CardDescription`, `CardContent`, `CardFooter` | `@/components/ui/card`   | Content containers                                                                                                  |
 
 ### Where to Put Components
 
-| Type                        | Location                                          |
-| --------------------------- | ------------------------------------------------- |
-| Shared across the whole app | `src/components/`                                 |
-| Specific to one feature     | `src/modules/<feature>/components/`               |
-| Design system primitives    | `src/components/ui/` (managed by the library CLI) |
+| Type                        | Location                            |
+| --------------------------- | ----------------------------------- |
+| Shared across the whole app | `src/components/customs/`           |
+| Design system primitives    | `src/components/ui/`                |
+| Feature-specific            | `src/modules/<feature>/components/` |
 
-### Standard Component Template
+### Adding a New Primitive
+
+Copy the pattern from an existing primitive (e.g. `input.tsx`):
+
+1. Use `React.forwardRef` for all primitives
+2. Accept a `className` prop and merge with `cn()`
+3. Export the component and its props interface
+4. Add it to this skill file
+
+### Standard Form Pattern
 
 ```tsx
-// [YOUR FRAMEWORK] component template
-// Customize this for your stack
+"use client";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
-interface MyComponentProps {
-  title: string;
-  className?: string;
-  children?: React.ReactNode;
-}
+const schema = z.object({
+  email: z.string().email(),
+});
 
-export function MyComponent({ title, className, children }: MyComponentProps) {
+type FormValues = z.infer<typeof schema>;
+
+export function MyForm() {
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm<FormValues>({
+    resolver: zodResolver(schema),
+  });
+
   return (
-    <div className={/* your className utility */}>
-      <h2>{title}</h2>
-      {children}
-    </div>
+    <form onSubmit={handleSubmit(console.log)} noValidate>
+      <Label htmlFor="email">Email</Label>
+      <Input
+        id="email"
+        type="email"
+        aria-invalid={!!errors.email}
+        aria-describedby={errors.email ? "email-error" : undefined}
+        {...register("email")}
+      />
+      {errors.email && (
+        <p id="email-error" role="alert">
+          {errors.email.message}
+        </p>
+      )}
+      <Button type="submit">Submit</Button>
+    </form>
   );
 }
 ```
 
-### Key Conventions
+### Key Rules
 
-- Use the project's className utility for conditional classes (e.g. `cn()`, `clsx()`, `classnames()`)
-- Use the project's icon library consistently (e.g. lucide-react, heroicons, FontAwesome)
-- Loading states: use skeleton components or spinners from the design system
-- Empty states: use a consistent empty state component
-- Always export from the module's `index.ts`
-
-### Available Shared Components
-
-Check `src/components/index.ts` (or equivalent) for all available shared components before building new ones.
+- Use `cn()` from `@/lib/utils` for all conditional classNames
+- Use `lucide-react` for icons — no other icon libraries
+- Always pair `Label` with `Input` via `htmlFor`/`id`
+- Always add `aria-invalid` and `aria-describedby` on inputs with validation errors
+- Loading states: use `<Loader2 className="animate-spin" />` from lucide-react

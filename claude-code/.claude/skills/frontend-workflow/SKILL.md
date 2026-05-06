@@ -4,55 +4,155 @@ description: Workflow for adding new data fetching, components, and pages to the
 allowed-tools: Read, Write, Edit, Bash, Glob
 ---
 
-<!--
-  CUSTOMIZE THIS FILE:
-  Replace the content below with your actual frontend stack and patterns.
-  Examples: React + REST, Vue + GraphQL, Next.js + tRPC, Angular + NgRx, etc.
--->
+## Frontend Stack
 
-## Frontend Development Workflow
+- **Framework**: Next.js 16 (App Router)
+- **Language**: TypeScript (strict mode)
+- **Styling**: Tailwind CSS v4
+- **Forms**: react-hook-form + zod
+- **Data fetching**: `apiClient` from `@/lib/api-client` (typed fetch wrapper over Next.js API routes)
+- **State**: React local state (`useState`, `useReducer`) — no global state library
+- **UI primitives**: `src/components/ui/` (shadcn-style, hand-rolled)
 
-### Stack
+---
 
-- **Framework**: [e.g. Next.js, React, Vue, Angular]
-- **Data fetching**: [e.g. React Query, Apollo Client, SWR, Axios, tRPC]
-- **Styling**: [e.g. Tailwind CSS, CSS Modules, styled-components]
-- **State management**: [e.g. Zustand, Redux, Pinia, Context API]
-- **Forms**: [e.g. React Hook Form, Formik, VeeValidate]
+## Project Structure
 
-### Adding a New Data Fetch
-
-1. Define the API call in `src/services/<feature>.ts` (or your equivalent)
-2. Create a custom hook in `src/hooks/use-<feature>.ts` that wraps the fetch
-3. Use the hook in your component — never call the API directly from a component
-
-```typescript
-// src/hooks/use-users.ts
-export function useUsers() {
-  // [YOUR DATA FETCHING PATTERN]
-  // e.g. return useQuery({ queryKey: ['users'], queryFn: fetchUsers })
-}
-
-// Component
-const { data, isLoading, error } = useUsers();
+```
+src/
+  app/
+    (private)/          # Auth-protected routes
+    (public)/           # Public routes (login, signup, etc.)
+    api/                # Next.js Route Handlers (backend)
+  modules/              # Feature modules
+    <feature>/
+      components/       # UI components
+      hooks/            # Custom hooks
+      types/index.ts    # TypeScript types
+      index.ts          # Barrel export
+      README.md         # Module documentation (auto-generated)
+      tests/            # Playwright tests (auto-generated)
+  components/
+    ui/                 # Shared UI primitives (Button, Input, Card, etc.)
+    customs/            # Shared custom components
+  lib/
+    utils.ts            # cn() helper
+    api-client.ts       # Typed fetch wrapper
 ```
 
-### Component Conventions
+---
 
-- **Shared components** → `src/components/`
+## Adding a New Data Fetch
+
+Never call `fetch` directly from a component. Always:
+
+1. Define the API route in `src/app/api/<feature>/route.ts`
+2. Create a hook in `src/modules/<feature>/hooks/use<Feature>.ts`
+
+```typescript
+// src/modules/users/hooks/useUsers.ts
+import { useState, useEffect } from "react";
+import { apiClient, ApiError } from "@/lib/api-client";
+import type { User } from "../types";
+
+export function useUsers() {
+  const [users, setUsers] = useState<User[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    apiClient
+      .get<User[]>("/api/users")
+      .then(setUsers)
+      .catch((err) => {
+        setError(err instanceof ApiError ? err.message : "Failed to load");
+      })
+      .finally(() => setIsLoading(false));
+  }, []);
+
+  return { users, isLoading, error };
+}
+```
+
+---
+
+## Component Conventions
+
+- **Shared across app** → `src/components/`
 - **Feature-specific** → `src/modules/<feature>/components/`
+- **UI primitives** → `src/components/ui/` (Button, Input, Card, Label, etc.)
 - Always handle loading and error states
-- Use the project's design system / component library
+- Use `cn()` from `@/lib/utils` for conditional classes
+- Use `lucide-react` for icons
 
-### Adding a New Page
+### Standard Component Template
 
-1. Create the page file at the correct path
-2. Create a module folder if the page needs its own data/components
-3. Register the route in the router or navigation config
+```tsx
+"use client"; // only if using hooks/events
 
-### Key Rules
+import { cn } from "@/lib/utils";
 
-- Never call APIs directly from components — use hooks
-- Always type your props — no `any`
-- Use the project's utility functions for classNames, formatting, etc.
-- Export components from the module's `index.ts` barrel file
+interface MyComponentProps {
+  title: string;
+  className?: string;
+  children?: React.ReactNode;
+}
+
+export function MyComponent({ title, className, children }: MyComponentProps) {
+  return (
+    <div className={cn("base-classes", className)}>
+      <h2>{title}</h2>
+      {children}
+    </div>
+  );
+}
+```
+
+---
+
+## API Route Template
+
+```typescript
+// src/app/api/<feature>/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+
+const schema = z.object({
+  /* ... */
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const parsed = schema.safeParse(body);
+
+    if (!parsed.success) {
+      return NextResponse.json({ message: "Invalid input" }, { status: 400 });
+    }
+
+    // business logic here
+
+    return NextResponse.json(
+      {
+        /* response */
+      },
+      { status: 200 },
+    );
+  } catch {
+    return NextResponse.json(
+      { message: "Internal server error" },
+      { status: 500 },
+    );
+  }
+}
+```
+
+---
+
+## Key Rules
+
+- No `any` types — type all props and return values
+- No direct `fetch` in components — use `apiClient`
+- Export everything from `index.ts`
+- Use `@/` path aliases — no relative `../../` imports
+- Every new module gets a `README.md` and Playwright tests (see `/new-module` command)
