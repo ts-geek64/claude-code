@@ -1,22 +1,12 @@
 name: Claude Code
 
 on:
-  issue_comment:
-    types: [created]
   issues:
     types: [opened]
-  pull_request:
-    types: [opened]
-  pull_request_review_comment:
-    types: [created]
 
 jobs:
   claude:
-    if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'issues' && contains(github.event.issue.body, '@claude')) ||
-      (github.event_name == 'pull_request' && contains(github.event.pull_request.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
+    if: contains(github.event.issue.body, '@claude')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -26,17 +16,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Run Claude
-        uses: anthropics/claude-code-action@beta
+        uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: "--max-turns 5 --model claude-haiku-4-5"
           create_pull_request: "true"
           allowed_tools: "Bash(pip:*),Bash(find:*),Bash(cat:*),Bash(ls:*),Bash(mkdir:*),Bash(cp:*),Bash(mv:*),Bash(grep:*),Bash(sed:*),Bash(echo:*),Bash(git:*)"
           custom_instructions: |
-            You are working inside the `nuorion-crm-internals` monorepo — a multi-tenant CRM automation platform deployed as Google Cloud Functions on GCP.
+            You are working inside the monorepo — a multi-tenant CRM automation platform deployed as Google Cloud Functions on GCP.
 
             ## Your Primary Task: Convert Scripts to Production-Ready Cron Jobs
 

@@ -1,31 +1,51 @@
-# PR Labels Setup
+# PR Labels
 
-Two labels must exist in the GitHub repository for the automation workflows to trigger.
-Create them once under **Settings → Labels**.
+Three labels control all Claude automation. **Nothing runs automatically** — every action requires a label to be applied.
 
-| Label            | Color     | Description                                                          |
-| ---------------- | --------- | -------------------------------------------------------------------- |
-| `generate:tests` | `#0075ca` | Triggers Claude to write/update Playwright tests for changed modules |
-| `generate:docs`  | `#e4e669` | Triggers Claude to write/update README.md for changed modules        |
+| Label            | What happens                                                                                         |
+| ---------------- | ---------------------------------------------------------------------------------------------------- |
+| `review:pr`      | Claude reviews the PR diff and posts a comment with findings                                         |
+| `generate:tests` | Claude writes Playwright tests → new branch `claude-{your-branch}` → new PR → comment on original PR |
+| `generate:docs`  | Claude writes module README → new branch `claude-{your-branch}` → new PR → comment on original PR    |
 
-## How to create labels via GitHub CLI
+Issues with `@claude` in the body trigger the issue workflow automatically (unchanged).
 
-```bash
-gh label create "generate:tests" --color "0075ca" --description "Generate Playwright tests for changed modules"
-gh label create "generate:docs"  --color "e4e669" --description "Generate module documentation"
+---
+
+## Branch and PR flow for generate:tests / generate:docs
+
+```
+your-branch  ──(label added)──▶  claude-your-branch
+                                       │
+                                       ▼
+                                  PR opened:
+                                  claude-your-branch → your-branch
+                                       │
+                                       ▼
+                                  Comment posted on original PR
+                                  with link to the new PR
 ```
 
-## How it works
+If both labels are applied, both workflows reuse the same `claude-{branch}` branch and the second workflow updates the existing PR body rather than opening a duplicate.
 
-1. Open a PR that adds or modifies files inside `client/src/modules/<name>/`
-2. Add the label `generate:tests` and/or `generate:docs`
-3. The corresponding workflow triggers automatically
-4. Claude reads all source files in the changed module(s), then writes or replaces:
-   - `client/src/modules/<name>/tests/<name>.spec.ts`
-   - `client/src/modules/<name>/README.md`
-5. Changes are committed directly to the PR branch
-6. A comment is posted on the PR with links to the updated files
+---
+
+## Create labels (run once)
+
+```bash
+gh label create "review:pr"       --color "d93f0b" --description "Trigger Claude PR review"
+gh label create "generate:tests"  --color "0075ca" --description "Generate Playwright tests for changed modules"
+gh label create "generate:docs"   --color "e4e669" --description "Generate module documentation"
+```
 
 ## Required secret
 
-Add `ANTHROPIC_API_KEY` to **Settings → Secrets and variables → Actions**.
+`ANTHROPIC_API_KEY` → Settings → Secrets and variables → Actions
+
+## Cost controls
+
+- Model: `claude-haiku-4-5` on all workflows
+- `--max-turns 5` on generate, `--max-turns 3` on review
+- `fetch-depth: 1` everywhere
+- Claude is told to read only the specific files it needs
+- Zero automatic triggers on PR open/push/sync

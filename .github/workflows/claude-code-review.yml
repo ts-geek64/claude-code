@@ -1,33 +1,41 @@
-name: Claude Code Review
+name: PR Review
+
+# Fires ONLY when the label "review:pr" is added to a pull request.
+# Nothing runs automatically on PR open or push.
 
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
+    types: [labeled]
 
 jobs:
   claude-review:
+    if: github.event.label.name == 'review:pr'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
-      issues: write
 
     steps:
-      - name: Checkout repository
+      - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
       - name: Run Claude Code Review
         id: claude-review
-        uses: anthropics/claude-code-action@beta
+        uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: "--max-turns 3 --model claude-haiku-4-5"
           direct_prompt: |
-            Please review this pull request. Check for:
-            - Code quality and best practices
-            - Potential bugs or logic errors
-            - Security issues
-            - Adherence to the repository's architecture patterns
-            Post your review as a comment on the PR.
+            Review the diff of this pull request. Be concise.
+
+            Check only:
+            - Bugs or logic errors
+            - Missing error handling
+            - Obvious security issues
+            - Broken imports or type errors
+
+            Format: bullet points grouped by file. Skip style/formatting comments.
+            Post as a single PR comment. Do not read files outside the diff.

@@ -1,8 +1,8 @@
 name: Generate Module Documentation
 
-# Triggered when the label "generate:docs" is added to a PR.
-# Detects which module(s) the PR touches, then asks Claude to write
-# or update exactly one README.md per module.
+# Fires ONLY when the label "generate:docs" is added to a pull request.
+# Claude writes docs to a new branch "claude-{original-branch}" and opens
+# a PR targeting the original branch.
 
 on:
   pull_request:
@@ -20,143 +20,190 @@ jobs:
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ github.event.pull_request.head.ref }}
 
       - name: Detect changed modules
         id: modules
         run: |
-          git fetch origin ${{ github.event.pull_request.base.ref }}
+          git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
           CHANGED=$(git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD)
-          echo "Changed files:"
-          echo "$CHANGED"
 
           MODULES=$(echo "$CHANGED" \
             | grep '^client/src/modules/' \
             | sed 's|client/src/modules/||' \
             | cut -d'/' -f1 \
             | sort -u \
-            | tr '\n' ' ')
+            | tr '\n' ' ' \
+            | xargs)
 
-          echo "Detected modules: $MODULES"
           echo "modules=$MODULES" >> $GITHUB_OUTPUT
+          echo "Detected modules: $MODULES"
 
-      - name: Generate documentation with Claude
+      - name: Create claude branch
+        if: steps.modules.outputs.modules != ''
+        id: branch
+        run: |
+          ORIGINAL="${{ github.event.pull_request.head.ref }}"
+          CLAUDE_BRANCH="claude-${ORIGINAL}"
+          echo "claude_branch=$CLAUDE_BRANCH" >> $GITHUB_OUTPUT
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Reuse the branch if it already exists (e.g. tests were generated first)
+          if git ls-remote --exit-code origin "$CLAUDE_BRANCH" > /dev/null 2>&1; then
+            echo "Branch $CLAUDE_BRANCH already exists — reusing"
+            git fetch origin "$CLAUDE_BRANCH"
+            git checkout "$CLAUDE_BRANCH"
+          else
+            git checkout -b "$CLAUDE_BRANCH"
+            git push origin "$CLAUDE_BRANCH"
+          fi
+
+      - name: Generate docs with Claude
         if: steps.modules.outputs.modules != ''
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          claude_args: "--max-turns 10"
+          claude_args: "--max-turns 5 --model claude-haiku-4-5"
           prompt: |
-            You are writing module documentation for a Next.js frontend codebase.
+            Write module documentation for: ${{ steps.modules.outputs.modules }}
 
-            ## Modules to document
-            ${{ steps.modules.outputs.modules }}
+            IMPORTANT: You must commit all changes to the branch "${{ steps.branch.outputs.claude_branch }}".
+            Do NOT commit to "${{ github.event.pull_request.head.ref }}".
 
-            ## Your task
-            For each module listed above:
+            For each module:
+            1. Read only: `client/src/modules/<name>/index.ts`, `client/src/modules/<name>/types/index.ts`, component files, hook files.
+            2. Write `client/src/modules/<name>/README.md` with this structure:
 
-            1. Read ALL source files inside `client/src/modules/<module-name>/` including components, hooks, and types.
-            2. Read any related API routes in `client/src/app/api/` that this module calls.
-            3. Read any pages in `client/src/app/` that use this module.
-            4. Write or fully replace `client/src/modules/<module-name>/README.md` using the exact structure below.
-            5. Commit the file to this PR branch with message: `docs(<module-name>): update module README`.
-
-            ## README structure (follow exactly)
-
-            ```markdown
-            # <Module Name> Module
-
-            One sentence: what this module does and why it exists.
+            ```
+            # <Name> Module
+            One sentence — what it does.
 
             ## Files
-
             | File | Purpose |
             |------|---------|
-            | `components/foo.tsx` | What it renders |
-            | `hooks/use-foo.ts` | What it manages |
-            | `types/index.ts` | Types it exports |
 
             ## API Routes
-
             | Method | Path | Body | Response |
-            |--------|------|------|----------|
-            | POST | `/api/...` | `{ field: type }` | `{ field: type }` |
-
-            (Omit this section if the module has no API routes.)
+            (omit if none)
 
             ## Components
-
             ### `ComponentName`
-            What it renders. Props (if any). One usage example.
-
-            ```tsx
-            <ComponentName prop="value" />
-            ```
+            What it renders. Usage example (5 lines max).
 
             ## Hooks
-
-            ### `useHookName(params?)`
-            What it does. Return shape. One usage example.
-
-            ```ts
-            const { data, isLoading, error } = useHookName();
-            ```
+            ### `useHookName()`
+            What it returns. Usage example (3 lines max).
 
             ## Types
-
-            ```ts
-            // Only list types that consumers of this module need to know about
-            interface FooType { ... }
-            ```
-
-            ## Usage
-
-            Minimal complete example showing how to use this module in a page.
-
-            ```tsx
-            import { ComponentName } from "@/modules/<name>";
-            ```
+            Only types a consumer needs. Code block only, no prose.
 
             ## Notes
-
-            Bullet points only. Only include if there is something genuinely non-obvious
-            (e.g. a known limitation, a security consideration, a gotcha).
-            Omit this section if there is nothing worth noting.
+            Bullet points. Only non-obvious things. Omit if nothing to add.
             ```
 
-            ## Writing rules — follow strictly
-            - **No jargon.** Write as if explaining to a developer who has never seen this codebase.
-            - **No duplication.** If something is shown in a code example, do not repeat it in prose.
-            - **No filler.** Every sentence must add information. Cut phrases like "This component is responsible for..." — just say what it does.
-            - **Concise types.** Only document types that a consumer of the module needs. Skip internal-only types.
-            - **Accurate.** Read the actual source code. Do not invent props, return values, or behaviour.
-            - **LLM-friendly.** A developer or AI reading only this file should understand the entire module without opening any source file.
-            - Read `CLAUDE.md` at the repo root for project conventions before writing.
+            3. Run: git checkout ${{ steps.branch.outputs.claude_branch }}
+            4. Commit with message: `docs(<name>): generate module README`
+            5. Push to origin/${{ steps.branch.outputs.claude_branch }}
 
-      - name: Post summary comment
+            Rules:
+            - No jargon, no filler phrases
+            - No duplication between prose and code examples
+            - Every sentence must add new information
+            - Total README must be under 80 lines
+
+      - name: Open PR and link to original
         if: steps.modules.outputs.modules != ''
         uses: actions/github-script@v7
         with:
           script: |
+            const originalBranch = '${{ github.event.pull_request.head.ref }}';
+            const claudeBranch   = '${{ steps.branch.outputs.claude_branch }}';
+            const originalPrNum  = context.issue.number;
+            const originalPrUrl  = '${{ github.event.pull_request.html_url }}';
+
             const modules = '${{ steps.modules.outputs.modules }}'.trim().split(' ').filter(Boolean);
-            const list = modules.map(m => `- \`client/src/modules/${m}/README.md\``).join('\n');
-            await github.rest.issues.createComment({
+            const fileList = modules.map(m =>
+              `- \`client/src/modules/${m}/README.md\``
+            ).join('\n');
+
+            // Check if a PR for this claude branch already exists
+            const existing = await github.rest.pulls.list({
               owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: `### ✅ Documentation generated\n\nUpdated docs:\n${list}\n\nReview the changes on this branch before merging.`
+              repo:  context.repo.repo,
+              head:  `${context.repo.owner}:${claudeBranch}`,
+              state: 'open',
             });
 
-      - name: Warn if no modules detected
+            let newPrUrl;
+
+            if (existing.data.length > 0) {
+              // PR already exists (tests were generated first) — just update the body
+              newPrUrl = existing.data[0].html_url;
+              const existingBody = existing.data[0].body || '';
+              if (!existingBody.includes('README')) {
+                await github.rest.pulls.update({
+                  owner:        context.repo.owner,
+                  repo:         context.repo.repo,
+                  pull_number:  existing.data[0].number,
+                  body: existingBody + '\n\n**Docs added:**\n' + fileList,
+                });
+              }
+            } else {
+              // Open a new PR
+              try {
+                const newPr = await github.rest.pulls.create({
+                  owner: context.repo.owner,
+                  repo:  context.repo.repo,
+                  title: `docs: module README for #${originalPrNum}`,
+                  head:  claudeBranch,
+                  base:  originalBranch,
+                  body: [
+                    `## Generated Module Documentation`,
+                    ``,
+                    `Auto-generated by Claude for PR #${originalPrNum} (${originalPrUrl}).`,
+                    ``,
+                    `**Files added:**`,
+                    fileList,
+                    ``,
+                    `Review and merge this PR into \`${originalBranch}\` before merging the original PR.`,
+                  ].join('\n'),
+                });
+                newPrUrl = newPr.data.html_url;
+              } catch (err) {
+                core.warning(`Could not create PR: ${err.message}`);
+                return;
+              }
+            }
+
+            // Comment on the original PR
+            await github.rest.issues.createComment({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: originalPrNum,
+              body: [
+                `### 📄 Module documentation generated`,
+                ``,
+                `A new PR has been opened with the generated docs:`,
+                `**→ ${newPrUrl}**`,
+                ``,
+                `Branch: \`${claudeBranch}\` → \`${originalBranch}\``,
+                ``,
+                fileList,
+              ].join('\n'),
+            });
+
+      - name: Warn — no modules found
         if: steps.modules.outputs.modules == ''
         uses: actions/github-script@v7
         with:
           script: |
             await github.rest.issues.createComment({
               owner: context.repo.owner,
-              repo: context.repo.repo,
+              repo:  context.repo.repo,
               issue_number: context.issue.number,
-              body: `### ⚠️ No frontend modules detected\n\nThe \`generate:docs\` label was applied but no changes were found under \`client/src/modules/\`.\n\nMake sure this PR modifies files inside a module folder.`
+              body: '⚠️ **generate:docs** — no changes found under `client/src/modules/`. Label this PR only when it introduces or modifies a module.',
             });

@@ -1,8 +1,8 @@
 name: Generate Playwright Tests
 
-# Triggered when the label "generate:tests" is added to a PR.
-# Detects which module(s) the PR touches, then asks Claude to write
-# or update exactly one Playwright spec per module.
+# Fires ONLY when the label "generate:tests" is added to a pull request.
+# Claude writes tests to a new branch "claude-{original-branch}" and opens
+# a PR targeting the original branch.
 
 on:
   pull_request:
@@ -20,88 +20,139 @@ jobs:
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ github.event.pull_request.head.ref }}
 
       - name: Detect changed modules
         id: modules
         run: |
-          # List files changed in this PR vs base branch
-          git fetch origin ${{ github.event.pull_request.base.ref }}
+          git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
           CHANGED=$(git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD)
-          echo "Changed files:"
-          echo "$CHANGED"
 
-          # Extract unique module names from client/src/modules/<name>/
           MODULES=$(echo "$CHANGED" \
             | grep '^client/src/modules/' \
             | sed 's|client/src/modules/||' \
             | cut -d'/' -f1 \
             | sort -u \
-            | tr '\n' ' ')
+            | tr '\n' ' ' \
+            | xargs)
 
-          echo "Detected modules: $MODULES"
           echo "modules=$MODULES" >> $GITHUB_OUTPUT
+          echo "Detected modules: $MODULES"
 
-      - name: Generate Playwright tests with Claude
+      - name: Create claude branch
+        if: steps.modules.outputs.modules != ''
+        id: branch
+        run: |
+          ORIGINAL="${{ github.event.pull_request.head.ref }}"
+          CLAUDE_BRANCH="claude-${ORIGINAL}"
+          echo "claude_branch=$CLAUDE_BRANCH" >> $GITHUB_OUTPUT
+
+          # Create the claude branch from the current PR branch
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$CLAUDE_BRANCH"
+          git push origin "$CLAUDE_BRANCH"
+
+      - name: Generate tests with Claude
         if: steps.modules.outputs.modules != ''
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          claude_args: "--max-turns 10"
+          claude_args: "--max-turns 5 --model claude-haiku-4-5"
           prompt: |
-            You are updating Playwright end-to-end tests for a Next.js frontend.
+            Write Playwright tests for these modules: ${{ steps.modules.outputs.modules }}
 
-            ## Modules to process
-            ${{ steps.modules.outputs.modules }}
+            IMPORTANT: You must commit all changes to the branch "${{ steps.branch.outputs.claude_branch }}".
+            Do NOT commit to "${{ github.event.pull_request.head.ref }}".
 
-            ## Your task
-            For each module listed above:
+            For each module:
+            1. Read only: `client/src/modules/<name>/index.ts`, `client/src/modules/<name>/types/index.ts`, and the component/hook files listed in index.ts.
+            2. Write `client/src/modules/<name>/tests/<name>.spec.ts` covering:
+               - Page renders key elements
+               - Validation errors on bad input
+               - Happy path (mock API with `page.route()`)
+               - API error (mock 4xx, check error shown)
+               - Loading state (button disabled during request)
+            3. Run: git checkout ${{ steps.branch.outputs.claude_branch }}
+            4. Commit with message: `test(<name>): generate Playwright spec`
+            5. Push to origin/${{ steps.branch.outputs.claude_branch }}
 
-            1. Read ALL source files inside `client/src/modules/<module-name>/` to understand what the module does.
-            2. Read the existing test file at `client/src/modules/<module-name>/tests/<module-name>.spec.ts` if it exists.
-            3. Write or fully replace that test file so it covers:
-               - Renders correctly (key elements visible)
-               - Client-side validation errors (empty submit, invalid inputs)
-               - Happy path (mock the API route with `page.route()`, verify redirect or success state)
-               - API error (mock a 4xx/5xx, verify error message shown)
-               - Loading state (delay mock response, verify button is disabled/shows spinner)
-               - Basic accessibility (inputs have labels, form has aria-label, keyboard submit works)
-            4. Save the file to `client/src/modules/<module-name>/tests/<module-name>.spec.ts`.
-            5. Commit the file directly to this PR branch with message: `test(<module-name>): update Playwright spec`.
+            Rules:
+            - `@playwright/test` only
+            - Selectors: `getByRole()` or `getByLabel()` only
+            - Mock every API call — no real network
+            - Keep each test under 20 lines
+            - No duplicate assertions across tests
 
-            ## Rules
-            - Use `@playwright/test` only — no other test libraries.
-            - Selectors: always `page.getByRole()` or `page.getByLabel()`. Never CSS selectors or `page.locator('.class')`.
-            - Mock all API calls with `page.route('/api/...')` — no real network calls.
-            - One `test.describe` block per page/feature within the module.
-            - No comments explaining what Playwright does — only comments explaining WHY a specific test exists if it is non-obvious.
-            - Keep tests concise. No duplicate assertions. No test that only checks something already covered by another test.
-            - Read `CLAUDE.md` at the repo root for project conventions before writing any code.
-
-      - name: Post summary comment
+      - name: Open PR and link to original
         if: steps.modules.outputs.modules != ''
         uses: actions/github-script@v7
         with:
           script: |
+            const originalBranch = '${{ github.event.pull_request.head.ref }}';
+            const claudeBranch   = '${{ steps.branch.outputs.claude_branch }}';
+            const originalPrNum  = context.issue.number;
+            const originalPrUrl  = '${{ github.event.pull_request.html_url }}';
+
+            // Build file list for PR body
             const modules = '${{ steps.modules.outputs.modules }}'.trim().split(' ').filter(Boolean);
-            const list = modules.map(m => `- \`client/src/modules/${m}/tests/${m}.spec.ts\``).join('\n');
+            const fileList = modules.map(m =>
+              `- \`client/src/modules/${m}/tests/${m}.spec.ts\``
+            ).join('\n');
+
+            // Open the new PR targeting the original branch
+            let newPr;
+            try {
+              newPr = await github.rest.pulls.create({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                title: `test: Playwright specs for #${originalPrNum}`,
+                head:  claudeBranch,
+                base:  originalBranch,
+                body: [
+                  `## Generated Playwright Tests`,
+                  ``,
+                  `Auto-generated by Claude for PR #${originalPrNum} (${originalPrUrl}).`,
+                  ``,
+                  `**Files added:**`,
+                  fileList,
+                  ``,
+                  `Review and merge this PR into \`${originalBranch}\` before merging the original PR.`,
+                ].join('\n'),
+              });
+            } catch (err) {
+              // PR may already exist if label was re-applied
+              core.warning(`Could not create PR: ${err.message}`);
+              return;
+            }
+
+            // Comment on the original PR with a link
             await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: `### ✅ Playwright tests generated\n\nUpdated test files:\n${list}\n\nReview the changes on this branch before merging.`
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: originalPrNum,
+              body: [
+                `### 🧪 Playwright tests generated`,
+                ``,
+                `A new PR has been opened with the generated test files:`,
+                `**→ ${newPr.data.html_url}**`,
+                ``,
+                `Branch: \`${claudeBranch}\` → \`${originalBranch}\``,
+                ``,
+                fileList,
+              ].join('\n'),
             });
 
-      - name: Warn if no modules detected
+      - name: Warn — no modules found
         if: steps.modules.outputs.modules == ''
         uses: actions/github-script@v7
         with:
           script: |
             await github.rest.issues.createComment({
               owner: context.repo.owner,
-              repo: context.repo.repo,
+              repo:  context.repo.repo,
               issue_number: context.issue.number,
-              body: `### ⚠️ No frontend modules detected\n\nThe \`generate:tests\` label was applied but no changes were found under \`client/src/modules/\`.\n\nMake sure this PR modifies files inside a module folder.`
+              body: '⚠️ **generate:tests** — no changes found under `client/src/modules/`. Label this PR only when it introduces or modifies a module.',
             });
