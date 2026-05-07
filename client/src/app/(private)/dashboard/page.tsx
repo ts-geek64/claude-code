@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useAuth } from "@/modules/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -36,7 +37,7 @@ export default function DashboardPage() {
               Your account
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-2 text-sm text-zinc-600 dark:text-zinc-400">
+          <CardContent className="space-y-3 text-sm text-zinc-600 dark:text-zinc-400">
             <div className="flex justify-between">
               <span className="font-medium text-zinc-900 dark:text-zinc-50">
                 Name
@@ -54,6 +55,14 @@ export default function DashboardPage() {
                 ID
               </span>
               <span className="font-mono text-xs">{user?.id ?? "—"}</span>
+            </div>
+            <div className="pt-1">
+              <Link
+                href="/profile"
+                className="text-xs font-medium text-zinc-900 underline-offset-4 hover:underline dark:text-zinc-50"
+              >
+                Edit profile →
+              </Link>
             </div>
           </CardContent>
         </Card>
