@@ -1,4 +1,4 @@
-name: Generate Module Documentation
+name: Generate Module Docs
 
 # Fires ONLY when the label "generate:docs" is added to a pull request.
 # Claude writes docs to a new branch "claude-{original-branch}" and opens
@@ -23,22 +23,31 @@ jobs:
           fetch-depth: 1
           ref: ${{ github.event.pull_request.head.ref }}
 
+      # Use the GitHub API to list changed files — no git history needed.
       - name: Detect changed modules
         id: modules
-        run: |
-          git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
-          CHANGED=$(git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const files = await github.paginate(
+              github.rest.pulls.listFiles,
+              {
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                per_page: 100,
+              }
+            );
 
-          MODULES=$(echo "$CHANGED" \
-            | grep '^client/src/modules/' \
-            | sed 's|client/src/modules/||' \
-            | cut -d'/' -f1 \
-            | sort -u \
-            | tr '\n' ' ' \
-            | xargs)
+            const moduleSet = new Set();
+            for (const f of files) {
+              const match = f.filename.match(/^client\/src\/modules\/([^/]+)\//);
+              if (match) moduleSet.add(match[1]);
+            }
 
-          echo "modules=$MODULES" >> $GITHUB_OUTPUT
-          echo "Detected modules: $MODULES"
+            const modules = [...moduleSet].join(' ');
+            core.setOutput('modules', modules);
+            core.info(`Detected modules: ${modules || '(none)'}`);
 
       - name: Create claude branch
         if: steps.modules.outputs.modules != ''
@@ -51,11 +60,8 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Reuse the branch if it already exists (e.g. tests were generated first)
           if git ls-remote --exit-code origin "$CLAUDE_BRANCH" > /dev/null 2>&1; then
             echo "Branch $CLAUDE_BRANCH already exists — reusing"
-            git fetch origin "$CLAUDE_BRANCH"
-            git checkout "$CLAUDE_BRANCH"
           else
             git checkout -b "$CLAUDE_BRANCH"
             git push origin "$CLAUDE_BRANCH"
@@ -71,12 +77,12 @@ jobs:
           prompt: |
             Write module documentation for: ${{ steps.modules.outputs.modules }}
 
-            IMPORTANT: You must commit all changes to the branch "${{ steps.branch.outputs.claude_branch }}".
+            IMPORTANT: Commit all files to branch "${{ steps.branch.outputs.claude_branch }}".
             Do NOT commit to "${{ github.event.pull_request.head.ref }}".
 
-            For each module:
-            1. Read only: `client/src/modules/<name>/index.ts`, `client/src/modules/<name>/types/index.ts`, component files, hook files.
-            2. Write `client/src/modules/<name>/README.md` with this structure:
+            For each module <name>:
+            1. Read: `client/src/modules/<name>/index.ts`, `client/src/modules/<name>/types/index.ts`, component files, hook files.
+            2. Write `client/src/modules/<name>/README.md` using this exact structure:
 
             ```
             # <Name> Module
@@ -88,7 +94,7 @@ jobs:
 
             ## API Routes
             | Method | Path | Body | Response |
-            (omit if none)
+            (omit section if no API routes)
 
             ## Components
             ### `ComponentName`
@@ -99,21 +105,22 @@ jobs:
             What it returns. Usage example (3 lines max).
 
             ## Types
-            Only types a consumer needs. Code block only, no prose.
+            Code block only — types a consumer needs. No prose.
 
             ## Notes
-            Bullet points. Only non-obvious things. Omit if nothing to add.
+            Bullet points. Non-obvious things only. Omit if nothing to add.
             ```
 
-            3. Run: git checkout ${{ steps.branch.outputs.claude_branch }}
-            4. Commit with message: `docs(<name>): generate module README`
-            5. Push to origin/${{ steps.branch.outputs.claude_branch }}
+            3. Switch to the claude branch, commit, and push:
+               git checkout ${{ steps.branch.outputs.claude_branch }}
+               git add .
+               git commit -m "docs(<name>): generate module README"
+               git push origin ${{ steps.branch.outputs.claude_branch }}
 
             Rules:
-            - No jargon, no filler phrases
+            - No jargon, no filler phrases ("This component is responsible for...")
             - No duplication between prose and code examples
-            - Every sentence must add new information
-            - Total README must be under 80 lines
+            - README must be under 80 lines total
 
       - name: Open PR and link to original
         if: steps.modules.outputs.modules != ''
@@ -122,38 +129,35 @@ jobs:
           script: |
             const originalBranch = '${{ github.event.pull_request.head.ref }}';
             const claudeBranch   = '${{ steps.branch.outputs.claude_branch }}';
-            const originalPrNum  = context.issue.number;
-            const originalPrUrl  = '${{ github.event.pull_request.html_url }}';
+            const originalPrNum  = context.payload.pull_request.number;
+            const originalPrUrl  = context.payload.pull_request.html_url;
 
-            const modules = '${{ steps.modules.outputs.modules }}'.trim().split(' ').filter(Boolean);
-            const fileList = modules.map(m =>
-              `- \`client/src/modules/${m}/README.md\``
-            ).join('\n');
+            const modules  = '${{ steps.modules.outputs.modules }}'.trim().split(' ').filter(Boolean);
+            const fileList = modules.map(m => `- \`client/src/modules/${m}/README.md\``).join('\n');
 
-            // Check if a PR for this claude branch already exists
+            // Reuse existing PR if tests were generated first on the same claude branch
             const existing = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo:  context.repo.repo,
               head:  `${context.repo.owner}:${claudeBranch}`,
+              base:  originalBranch,
               state: 'open',
             });
 
             let newPrUrl;
-
             if (existing.data.length > 0) {
-              // PR already exists (tests were generated first) — just update the body
               newPrUrl = existing.data[0].html_url;
-              const existingBody = existing.data[0].body || '';
-              if (!existingBody.includes('README')) {
+              // Append docs section to existing PR body if not already there
+              const body = existing.data[0].body || '';
+              if (!body.includes('README')) {
                 await github.rest.pulls.update({
-                  owner:        context.repo.owner,
-                  repo:         context.repo.repo,
-                  pull_number:  existing.data[0].number,
-                  body: existingBody + '\n\n**Docs added:**\n' + fileList,
+                  owner:       context.repo.owner,
+                  repo:        context.repo.repo,
+                  pull_number: existing.data[0].number,
+                  body:        body + '\n\n**Docs added:**\n' + fileList,
                 });
               }
             } else {
-              // Open a new PR
               try {
                 const newPr = await github.rest.pulls.create({
                   owner: context.repo.owner,
@@ -164,12 +168,12 @@ jobs:
                   body: [
                     `## Generated Module Documentation`,
                     ``,
-                    `Auto-generated by Claude for PR #${originalPrNum} (${originalPrUrl}).`,
+                    `Auto-generated by Claude for PR #${originalPrNum} — ${originalPrUrl}`,
                     ``,
                     `**Files added:**`,
                     fileList,
                     ``,
-                    `Review and merge this PR into \`${originalBranch}\` before merging the original PR.`,
+                    `Merge this into \`${originalBranch}\` before merging the original PR.`,
                   ].join('\n'),
                 });
                 newPrUrl = newPr.data.html_url;
@@ -179,7 +183,6 @@ jobs:
               }
             }
 
-            // Comment on the original PR
             await github.rest.issues.createComment({
               owner:        context.repo.owner,
               repo:         context.repo.repo,
@@ -187,9 +190,7 @@ jobs:
               body: [
                 `### 📄 Module documentation generated`,
                 ``,
-                `A new PR has been opened with the generated docs:`,
                 `**→ ${newPrUrl}**`,
-                ``,
                 `Branch: \`${claudeBranch}\` → \`${originalBranch}\``,
                 ``,
                 fileList,
@@ -202,8 +203,8 @@ jobs:
         with:
           script: |
             await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo:  context.repo.repo,
-              issue_number: context.issue.number,
-              body: '⚠️ **generate:docs** — no changes found under `client/src/modules/`. Label this PR only when it introduces or modifies a module.',
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: '⚠️ **generate:docs** — no changes found under `client/src/modules/`. Apply this label only to PRs that add or modify a module.',
             });

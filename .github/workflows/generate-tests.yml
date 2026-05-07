@@ -23,22 +23,31 @@ jobs:
           fetch-depth: 1
           ref: ${{ github.event.pull_request.head.ref }}
 
+      # Use the GitHub API to list changed files — no git history needed.
       - name: Detect changed modules
         id: modules
-        run: |
-          git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
-          CHANGED=$(git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const files = await github.paginate(
+              github.rest.pulls.listFiles,
+              {
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                per_page: 100,
+              }
+            );
 
-          MODULES=$(echo "$CHANGED" \
-            | grep '^client/src/modules/' \
-            | sed 's|client/src/modules/||' \
-            | cut -d'/' -f1 \
-            | sort -u \
-            | tr '\n' ' ' \
-            | xargs)
+            const moduleSet = new Set();
+            for (const f of files) {
+              const match = f.filename.match(/^client\/src\/modules\/([^/]+)\//);
+              if (match) moduleSet.add(match[1]);
+            }
 
-          echo "modules=$MODULES" >> $GITHUB_OUTPUT
-          echo "Detected modules: $MODULES"
+            const modules = [...moduleSet].join(' ');
+            core.setOutput('modules', modules);
+            core.info(`Detected modules: ${modules || '(none)'}`);
 
       - name: Create claude branch
         if: steps.modules.outputs.modules != ''
@@ -48,11 +57,15 @@ jobs:
           CLAUDE_BRANCH="claude-${ORIGINAL}"
           echo "claude_branch=$CLAUDE_BRANCH" >> $GITHUB_OUTPUT
 
-          # Create the claude branch from the current PR branch
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$CLAUDE_BRANCH"
-          git push origin "$CLAUDE_BRANCH"
+
+          if git ls-remote --exit-code origin "$CLAUDE_BRANCH" > /dev/null 2>&1; then
+            echo "Branch $CLAUDE_BRANCH already exists — reusing"
+          else
+            git checkout -b "$CLAUDE_BRANCH"
+            git push origin "$CLAUDE_BRANCH"
+          fi
 
       - name: Generate tests with Claude
         if: steps.modules.outputs.modules != ''
@@ -64,27 +77,28 @@ jobs:
           prompt: |
             Write Playwright tests for these modules: ${{ steps.modules.outputs.modules }}
 
-            IMPORTANT: You must commit all changes to the branch "${{ steps.branch.outputs.claude_branch }}".
+            IMPORTANT: Commit all files to branch "${{ steps.branch.outputs.claude_branch }}".
             Do NOT commit to "${{ github.event.pull_request.head.ref }}".
 
-            For each module:
-            1. Read only: `client/src/modules/<name>/index.ts`, `client/src/modules/<name>/types/index.ts`, and the component/hook files listed in index.ts.
+            For each module <name>:
+            1. Read: `client/src/modules/<name>/index.ts`, `client/src/modules/<name>/types/index.ts`, and the component/hook files listed in index.ts.
             2. Write `client/src/modules/<name>/tests/<name>.spec.ts` covering:
                - Page renders key elements
                - Validation errors on bad input
                - Happy path (mock API with `page.route()`)
-               - API error (mock 4xx, check error shown)
+               - API error (mock 4xx, verify error shown)
                - Loading state (button disabled during request)
-            3. Run: git checkout ${{ steps.branch.outputs.claude_branch }}
-            4. Commit with message: `test(<name>): generate Playwright spec`
-            5. Push to origin/${{ steps.branch.outputs.claude_branch }}
+            3. Switch to the claude branch, commit, and push:
+               git checkout ${{ steps.branch.outputs.claude_branch }}
+               git add .
+               git commit -m "test(<name>): generate Playwright spec"
+               git push origin ${{ steps.branch.outputs.claude_branch }}
 
             Rules:
-            - `@playwright/test` only
-            - Selectors: `getByRole()` or `getByLabel()` only
-            - Mock every API call — no real network
-            - Keep each test under 20 lines
-            - No duplicate assertions across tests
+            - `@playwright/test` only. No other libraries.
+            - Selectors: `getByRole()` or `getByLabel()` only — never CSS selectors.
+            - Mock every API call with `page.route()` — no real network requests.
+            - Keep each test under 20 lines. No duplicate assertions.
 
       - name: Open PR and link to original
         if: steps.modules.outputs.modules != ''
@@ -93,42 +107,50 @@ jobs:
           script: |
             const originalBranch = '${{ github.event.pull_request.head.ref }}';
             const claudeBranch   = '${{ steps.branch.outputs.claude_branch }}';
-            const originalPrNum  = context.issue.number;
-            const originalPrUrl  = '${{ github.event.pull_request.html_url }}';
+            const originalPrNum  = context.payload.pull_request.number;
+            const originalPrUrl  = context.payload.pull_request.html_url;
 
-            // Build file list for PR body
-            const modules = '${{ steps.modules.outputs.modules }}'.trim().split(' ').filter(Boolean);
-            const fileList = modules.map(m =>
-              `- \`client/src/modules/${m}/tests/${m}.spec.ts\``
-            ).join('\n');
+            const modules  = '${{ steps.modules.outputs.modules }}'.trim().split(' ').filter(Boolean);
+            const fileList = modules.map(m => `- \`client/src/modules/${m}/tests/${m}.spec.ts\``).join('\n');
 
-            // Open the new PR targeting the original branch
-            let newPr;
-            try {
-              newPr = await github.rest.pulls.create({
-                owner: context.repo.owner,
-                repo:  context.repo.repo,
-                title: `test: Playwright specs for #${originalPrNum}`,
-                head:  claudeBranch,
-                base:  originalBranch,
-                body: [
-                  `## Generated Playwright Tests`,
-                  ``,
-                  `Auto-generated by Claude for PR #${originalPrNum} (${originalPrUrl}).`,
-                  ``,
-                  `**Files added:**`,
-                  fileList,
-                  ``,
-                  `Review and merge this PR into \`${originalBranch}\` before merging the original PR.`,
-                ].join('\n'),
-              });
-            } catch (err) {
-              // PR may already exist if label was re-applied
-              core.warning(`Could not create PR: ${err.message}`);
-              return;
+            // Check if a PR already exists for this claude branch
+            const existing = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              head:  `${context.repo.owner}:${claudeBranch}`,
+              base:  originalBranch,
+              state: 'open',
+            });
+
+            let newPrUrl;
+            if (existing.data.length > 0) {
+              newPrUrl = existing.data[0].html_url;
+            } else {
+              try {
+                const newPr = await github.rest.pulls.create({
+                  owner: context.repo.owner,
+                  repo:  context.repo.repo,
+                  title: `test: Playwright specs for #${originalPrNum}`,
+                  head:  claudeBranch,
+                  base:  originalBranch,
+                  body: [
+                    `## Generated Playwright Tests`,
+                    ``,
+                    `Auto-generated by Claude for PR #${originalPrNum} — ${originalPrUrl}`,
+                    ``,
+                    `**Files added:**`,
+                    fileList,
+                    ``,
+                    `Merge this into \`${originalBranch}\` before merging the original PR.`,
+                  ].join('\n'),
+                });
+                newPrUrl = newPr.data.html_url;
+              } catch (err) {
+                core.warning(`Could not create PR: ${err.message}`);
+                return;
+              }
             }
 
-            // Comment on the original PR with a link
             await github.rest.issues.createComment({
               owner:        context.repo.owner,
               repo:         context.repo.repo,
@@ -136,9 +158,7 @@ jobs:
               body: [
                 `### 🧪 Playwright tests generated`,
                 ``,
-                `A new PR has been opened with the generated test files:`,
-                `**→ ${newPr.data.html_url}**`,
-                ``,
+                `**→ ${newPrUrl}**`,
                 `Branch: \`${claudeBranch}\` → \`${originalBranch}\``,
                 ``,
                 fileList,
@@ -151,8 +171,8 @@ jobs:
         with:
           script: |
             await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo:  context.repo.repo,
-              issue_number: context.issue.number,
-              body: '⚠️ **generate:tests** — no changes found under `client/src/modules/`. Label this PR only when it introduces or modifies a module.',
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: '⚠️ **generate:tests** — no changes found under `client/src/modules/`. Apply this label only to PRs that add or modify a module.',
             });
